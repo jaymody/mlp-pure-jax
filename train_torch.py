@@ -4,24 +4,21 @@ import torch.nn.functional as F
 
 
 class MLP(nn.Module):
-    def __init__(self, in_dim, hidden_dims, out_dim):
+    def __init__(self, d_in, d_hidden, d_out):
         super().__init__()
-        sizes = [in_dim] + hidden_dims + [out_dim]
-        self.fcs = nn.ModuleList(
-            [nn.Linear(n_in, n_out) for n_in, n_out in zip(sizes[:-1], sizes[1:])]
-        )
+        self.fc1 = nn.Linear(d_in, d_hidden)
+        self.fc2 = nn.Linear(d_hidden, d_out)
 
         # use same weight/bias initialization as train_jax.py
-        for fc in self.fcs:
+        for fc in [self.fc1, self.fc2]:
             fc.weight = nn.Parameter(nn.init.normal_(fc.weight.data))
             fc.bias = nn.Parameter(nn.init.zeros_(fc.bias.data))
 
     def forward(self, x):
-        for fc in self.fcs[:-1]:
-            x = F.relu(fc(x))
-
-        last_fc = self.fcs[-1]
-        return last_fc(x)
+        x = self.fc1(x)
+        x = torch.relu(x)
+        x = self.fc2(x)
+        return x
 
 
 def train_step(model, train_loader, criterion, optimizer, device):
@@ -72,32 +69,15 @@ def compute_loss_and_acc(model, data_loader, criterion, device):
     return val_loss, val_acc
 
 
-def train(model, train_loader, val_loader, criterion, optimizer, n_epochs, device):
-    for epoch in range(n_epochs):
-        train_step(model, train_loader, criterion, optimizer, device)
-
-        val_loss, val_acc = compute_loss_and_acc(model, val_loader, criterion, device)
-        train_loss, train_acc = compute_loss_and_acc(
-            model, train_loader, criterion, device
-        )
-        print(
-            f"Epoch {epoch+1}/{n_epochs}\t"
-            f"train_loss {train_loss:.3f}\t"
-            f"train_acc {train_acc:.3f}\t"
-            f"val_loss {val_loss:.3f}\t"
-            f"val_acc {val_acc:.3f}\t"
-        )
-
-
 def train_mnist(
-    train_filepath,
-    test_filepath,
-    train_batch_size,
-    test_batch_size,
-    lr,
-    n_epochs,
-    seed,
-    device,
+    train_filepath="data/train.csv",
+    test_filepath="data/test.csv",
+    batch_size=64,
+    d_hidden=64,
+    lr=1e-3,
+    n_epochs=10,
+    seed=123,
+    device=torch.device("cpu"),
 ):
     from utils import read_mnist_csv, set_torch_seed
 
@@ -106,27 +86,28 @@ def train_mnist(
 
     # load data
     train_X, train_y = read_mnist_csv(train_filepath)
-    test_X, test_y = read_mnist_csv(test_filepath)
+    val_X, val_y = read_mnist_csv(test_filepath)
 
+    # normalize inputs to float numbers between 0 and 1 (inclusive)
     train_X = train_X / 255.0
-    test_X = test_X / 255.0
+    val_X = val_X / 255.0
 
     # data loaders
     train_loader = torch.utils.data.DataLoader(
         list(zip(train_X, train_y)),
-        batch_size=train_batch_size,
+        batch_size=batch_size,
         shuffle=True,
         drop_last=False,
     )
-    test_loader = torch.utils.data.DataLoader(
-        list(zip(test_X, test_y)),
-        batch_size=test_batch_size,
+    val_loader = torch.utils.data.DataLoader(
+        list(zip(val_X, val_y)),
+        batch_size=batch_size,
         shuffle=False,
         drop_last=False,
     )
 
     # model
-    model = MLP(784, [64], 10)
+    model = MLP(784, d_hidden, 10)
     model = model.to(device)
 
     # loss function
@@ -136,17 +117,21 @@ def train_mnist(
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
     # train loop
-    train(model, train_loader, test_loader, criterion, optimizer, n_epochs, device)
+    for epoch in range(n_epochs):
+        train_step(model, train_loader, criterion, optimizer, device)
+
+        val_loss, val_acc = compute_loss_and_acc(model, val_loader, criterion, device)
+        train_loss, train_acc = compute_loss_and_acc(
+            model, train_loader, criterion, device
+        )
+        print(
+            f"Epoch {f'{epoch+1}/{n_epochs}':<10}"
+            f"train_loss {train_loss:<10.3f}"
+            f"train_acc {train_acc:<10.3f}"
+            f"val_loss {val_loss:<10.3f}"
+            f"val_acc {val_acc:<10.3f}"
+        )
 
 
 if __name__ == "__main__":
-    train_mnist(
-        train_filepath="data/train.csv",
-        test_filepath="data/test.csv",
-        train_batch_size=64,
-        test_batch_size=64,
-        lr=1e-3,
-        n_epochs=10,
-        seed=123,
-        device=torch.device("cpu"),
-    )
+    train_mnist()

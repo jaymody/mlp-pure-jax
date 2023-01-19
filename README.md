@@ -1,5 +1,5 @@
 # MLP in Jax
-A pure jax implementation of a multi-layer perceptron neural network, trained on mnist.
+A pure jax implementation of a multi-layer perceptron neural network with a single hidden layer, trained on mnist.
 
 The purpose of this repo is educational. While there are many open source examples of neural networks in Jax, many of them use supplementary frameworks like [haiku](https://github.com/deepmind/dm-haiku) or [flax](https://github.com/google/flax). My aim with this repo is to provide an example of neural networks in **JUST** jax that is simple to understand.
 
