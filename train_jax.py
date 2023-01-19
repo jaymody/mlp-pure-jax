@@ -1,146 +1,110 @@
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 
 
-def forward_fn(params, X):
-    for W, b in params[:-1]:
-        X = jax.nn.relu(X @ W + b)
-
-    final_W, final_b = params[-1]
-    return X @ final_W + final_b
-
-
-def initialize_params(key, input_dim, hidden_dims, output_dim):
-    sizes = [input_dim] + hidden_dims + [output_dim]
-    keys = jax.random.split(key, len(sizes) - 1)
-    return [
-        (jax.random.normal(k, (n_in, n_out)), jnp.zeros((n_out,)))
-        for k, n_in, n_out in zip(keys, sizes[:-1], sizes[1:])
-    ]
+class Params(NamedTuple):
+    w1: jnp.ndarray  # [d_in, d_hidden]
+    b1: jnp.ndarray  # [d_hidden]
+    w2: jnp.ndarray  # [d_hidden, d_out]
+    b2: jnp.ndarray  # [d_out]
 
 
-def cross_entropy_loss(unnormalized_probs, y):
-    batch_size = unnormalized_probs.shape[0]
-    num_classes = unnormalized_probs.shape[-1]
-    log_probs = jax.nn.log_softmax(unnormalized_probs, axis=-1)
-    labels = jax.nn.one_hot(y, num_classes)
-    loss = jnp.sum(labels * -log_probs) / batch_size
-    return loss
+def init_params(d_in, d_hidden, d_out, key):
+    w1_key, w2_key = jax.random.split(key)
+    return Params(
+        w1=jax.random.normal(key=w1_key, shape=[d_in, d_hidden]),
+        b1=jnp.zeros(shape=[d_hidden]),
+        w2=jax.random.normal(key=w2_key, shape=[d_hidden, d_out]),
+        b2=jnp.zeros(shape=[d_out]),
+    )
 
 
-def loss_fn(params, X, y):
-    unnormalized_probs = forward_fn(params, X)
-    loss = cross_entropy_loss(unnormalized_probs, y)
+@jax.jit
+def neural_network(params, x):
+    x = x @ params.w1 + params.b1
+    x = jax.nn.relu(x)
+    x = x @ params.w2 + params.b2
+    return x
+
+
+@jax.jit
+@jax.vmap
+def cross_entropy_loss(logits, y):
+    return -jax.nn.log_softmax(logits)[y]
+
+
+@jax.jit
+def loss_fn(params, x, y):
+    logits = neural_network(params, x)
+    loss = jnp.mean(cross_entropy_loss(logits, y))  # average loss across examples
     return loss
 
 
 @jax.jit
-def update(params, X, y, lr):
-    # compute gradient
-    grad = jax.grad(loss_fn)(params, X, y)
-
-    # good ole vanilla stochastic gradient descent
-    params = jax.tree_map(lambda w, g: w - lr * g, params, grad)
-
+def update(params, x, y, lr):
+    grad = jax.grad(loss_fn)(params, x, y)
+    params = jax.tree_map(lambda w, g: w - lr * g, params, grad)  # gradient descent
     return params
 
 
-def compute_loss_and_accuracy(params, data_X, data_y, batch_size):
-    running_loss, n_correct, n_total = 0, 0, 0
-    for X, y in get_batches(data_X, data_y, batch_size):
-        batch_size = X.shape[0]
-
-        # feed forward
-        unnormalized_probs = forward_fn(params, X)
-
-        # compute loss
-        running_loss += cross_entropy_loss(unnormalized_probs, y) * batch_size
-
-        # accuracy
-        preds = jnp.argmax(unnormalized_probs, axis=-1)
-        n_correct += jnp.sum(preds == y)
-        n_total += batch_size
-
-    loss = running_loss / n_total
-    accuracy = n_correct / n_total
-    return loss, accuracy
-
-
-def get_batches(X, y, batch_size):
+def get_batches(X, Y, batch_size):
     for i in range(0, len(X), batch_size):
-        yield X[i : i + batch_size], y[i : i + batch_size]
+        yield X[i : i + batch_size], Y[i : i + batch_size]
 
 
-def train(
-    params,
-    train_X,
-    train_y,
-    val_X,
-    val_y,
-    lr,
-    n_epochs,
-    train_batch_size,
-    val_batch_size,
-):
-    for epoch in range(n_epochs):
-        for X, y in get_batches(train_X, train_y, train_batch_size):
-            params = update(params, X, y, lr)
+def compute_metrics(params, X, Y, batch_size):
+    loss, n_correct = 0, 0
+    for x, y in get_batches(X, Y, batch_size):
+        logits = neural_network(params, x)
 
-        train_loss, train_acc = compute_loss_and_accuracy(
-            params, train_X, train_y, train_batch_size
-        )
-        val_loss, val_acc = compute_loss_and_accuracy(
-            params, val_X, val_y, val_batch_size
-        )
-        print(
-            f"Epoch {epoch+1}/{n_epochs}\t"
-            f"train_loss {train_loss:.3f}\t"
-            f"train_acc {train_acc:.3f}\t"
-            f"val_loss {val_loss:.3f}\t"
-            f"val_acc {val_acc:.3f}\t"
-        )
+        loss += jnp.sum(cross_entropy_loss(logits, y))
+
+        preds = jnp.argmax(logits, axis=-1)
+        n_correct += jnp.sum(preds == y)
+
+    n_total = X.shape[0]
+    return loss / n_total, n_correct / n_total
 
 
 def train_mnist(
-    train_filepath,
-    test_filepath,
-    train_batch_size,
-    test_batch_size,
-    lr,
-    n_epochs,
-    seed,
+    train_filepath="data/train.csv",
+    test_filepath="data/test.csv",
+    batch_size=64,
+    d_hidden=64,
+    lr=1e-3,
+    n_epochs=10,
+    seed=123,
 ):
     from utils import read_mnist_csv
 
-    train_X, train_y = read_mnist_csv(train_filepath)
-    test_X, test_y = read_mnist_csv(test_filepath)
+    # load data
+    train_X, train_Y = read_mnist_csv(train_filepath)
+    val_X, val_Y = read_mnist_csv(test_filepath)
 
+    # normalize inputs to float numbers between 0 and 1 (inclusive)
     train_X = train_X / 255.0
-    test_X = test_X / 255.0
+    val_X = val_X / 255.0
 
-    key = jax.random.PRNGKey(seed)
-    params = initialize_params(key, 784, [64], 10)
+    # initialize parameters
+    params = init_params(784, d_hidden, 10, key=jax.random.PRNGKey(seed))
 
-    train(
-        params,
-        train_X,
-        train_y,
-        test_X,
-        test_y,
-        lr,
-        n_epochs,
-        train_batch_size,
-        test_batch_size,
-    )
+    # train loop
+    for epoch in range(n_epochs):
+        for x, y in get_batches(train_X, train_Y, batch_size):
+            params = update(params, x, y, lr)
+
+        train_loss, train_acc = compute_metrics(params, train_X, train_Y, batch_size)
+        val_loss, val_acc = compute_metrics(params, val_X, val_Y, batch_size)
+        print(
+            f"Epoch {f'{epoch+1}/{n_epochs}':<10}"
+            f"train_loss {train_loss:<10.3f}"
+            f"train_acc {train_acc:<10.3f}"
+            f"val_loss {val_loss:<10.3f}"
+            f"val_acc {val_acc:<10.3f}"
+        )
 
 
 if __name__ == "__main__":
-    train_mnist(
-        train_filepath="data/train.csv",
-        test_filepath="data/test.csv",
-        train_batch_size=64,
-        test_batch_size=64,
-        lr=1e-3,
-        n_epochs=10,
-        seed=123,
-    )
+    train_mnist()
