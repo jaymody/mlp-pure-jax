@@ -75,7 +75,7 @@ def download_mnist_as_csvs(train_csv_output_path, test_csv_output_path):
 
 
 if __name__ == "__main__":
-    download_mnist_as_csv(
+    download_mnist_as_csvs(
         os.path.join(os.path.dirname(__file__), "train.csv"),
         os.path.join(os.path.dirname(__file__), "test.csv"),
     )
